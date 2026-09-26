@@ -77,6 +77,10 @@ gw sftp sync --direction=pull --delete /var/log ./logs
 gw status
 ```
 
+Every verb accepts `--json`, on either side of the verb (`gw --json status` and
+`gw status --json` are the same call), and prints the raw envelope instead of
+formatted text — that is the shape a non-human caller should parse.
+
 ## Endpoints
 
 | Method | Path | Purpose |

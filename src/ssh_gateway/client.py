@@ -220,6 +220,27 @@ def cmd_routes(a) -> int:
 # ======================================================================
 # parser
 # ======================================================================
+def _common_flags() -> argparse.ArgumentParser:
+    """The flags every verb accepts, declared once as a parent parser.
+
+    ``--json`` lives here *and* on the top-level parser on purpose: reading it
+    as a global-only option made the documented agent invocation
+    ``gw status --json`` die in argparse, which is a poor way to learn that the
+    flag has to go in front. Both spellings now mean the same thing.
+
+    ``SUPPRESS`` is load-bearing, not tidiness. A subparser parses *its* slice
+    of the argv into a fresh namespace and then copies every attribute onto the
+    outer one, so a plain ``default=False`` here would overwrite the ``True``
+    the top-level parser already recorded -- silently turning ``gw --json
+    status`` back into non-JSON output. Suppressing the default leaves the
+    outer value alone unless the user actually typed the flag.
+    """
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
+                        help="print the raw response object")
+    return common
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="gw",
@@ -230,37 +251,39 @@ def build_parser() -> argparse.ArgumentParser:
                     help=f"gateway base URL (default {DEFAULT_URL}, env GW_URL)")
     ap.add_argument("--token", default=TOKEN, help="bearer token (env GW_TOKEN)")
     ap.add_argument("--json", action="store_true", help="print the raw response object")
+    common = _common_flags()
     sub = ap.add_subparsers(dest="sub", required=True)
 
     for name, fn, help_text in (("run", cmd_run, "run a command and wait for it"),
                                 ("stream", cmd_stream, "run a command, print output live"),
                                 ("async", cmd_async, "run a command detached, print job id")):
-        sp = sub.add_parser(name, help=help_text)
+        sp = sub.add_parser(name, help=help_text, parents=[common])
         sp.add_argument("cmd", help="command for the remote shell")
         sp.add_argument("--cwd", default="", help="remote working directory")
         if name == "run":
             sp.add_argument("--timeout", type=float, default=30, help="seconds")
         sp.set_defaults(func=fn)
 
-    sp = sub.add_parser("jobs", help="list jobs")
+    sp = sub.add_parser("jobs", help="list jobs", parents=[common])
     sp.set_defaults(func=cmd_jobs)
 
-    sp = sub.add_parser("job", help="one job's status")
+    sp = sub.add_parser("job", help="one job's status", parents=[common])
     sp.add_argument("id")
     sp.set_defaults(func=cmd_job)
 
-    sp = sub.add_parser("output", help="read a job's output")
+    sp = sub.add_parser("output", help="read a job's output", parents=[common])
     sp.add_argument("id")
     sp.add_argument("--follow", action="store_true", help="stream until the job ends")
     sp.add_argument("--tail", type=int, default=0, help="only the last N characters")
     sp.add_argument("--stream", choices=("stdout", "stderr"), default="stdout")
     sp.set_defaults(func=cmd_output)
 
-    sp = sub.add_parser("kill", help="kill a job (TERM, then KILL)")
+    sp = sub.add_parser("kill", help="kill a job (TERM, then KILL)", parents=[common])
     sp.add_argument("id")
     sp.set_defaults(func=cmd_kill)
 
-    sp = sub.add_parser("sftp", help="ls | put | get | sync against the device")
+    sp = sub.add_parser("sftp", help="ls | put | get | sync against the device",
+                        parents=[common])
     sp.add_argument("verb", choices=("ls", "put", "get", "sync"))
     sp.add_argument("rest", nargs="+",
                     help="ls REMOTE | put LOCAL REMOTE | get REMOTE LOCAL | sync SRC DST")
@@ -272,10 +295,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--dry-run", action="store_true")
     sp.set_defaults(func=cmd_sftp)
 
-    sp = sub.add_parser("status", help="gateway, transport and policy status")
+    sp = sub.add_parser("status", help="gateway, transport and policy status",
+                        parents=[common])
     sp.set_defaults(func=cmd_status)
 
-    sp = sub.add_parser("routes", help="print the endpoint contract the gateway serves")
+    sp = sub.add_parser("routes", help="print the endpoint contract the gateway serves",
+                        parents=[common])
     sp.set_defaults(func=cmd_routes)
     return ap
 
