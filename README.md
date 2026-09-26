@@ -78,8 +78,218 @@ gw status
 ```
 
 Every verb accepts `--json`, on either side of the verb (`gw --json status` and
-`gw status --json` are the same call), and prints the raw envelope instead of
-formatted text — that is the shape a non-human caller should parse.
+`gw status --json` are the same call), and prints the response's `data` payload
+as indented JSON instead of formatted text — that is the shape a non-human
+caller should parse.
+
+One consequence is worth knowing before you build on it: **`--json` always exits
+`0`.** The outcome you care about is a field inside that payload, not `gw`'s own
+status. Without `--json`, `gw run` exits with the remote command's exit code
+(`gw run 'exit 7'` → `7`); with it, the same call exits `0` and `exit_code: 7`
+sits in the JSON.
+
+## Recipes
+
+The patterns worth copying when a script or an agent drives the gateway. Every
+one below was executed against a real target — a Linux box reachable only over
+SSH, `bash`, no busybox — before being written down, and two of them were wrong
+on the first attempt. The corrected versions are here, with the failure left in,
+because it is the failure you will hit.
+
+### Ask what the target can do before asking it to do something
+
+Most remote-script failures are an assumption, not a bug. One round trip retires
+them:
+
+```bash
+gw run 'for c in bash sh busybox; do printf "%-8s %s\n" "$c" "$(command -v "$c" || echo -)"; done
+        for f in /proc/loadavg /proc/uptime /proc/meminfo; do
+          [ -r "$f" ] && echo "READ  $f" || echo "DENY  $f"
+        done'
+```
+
+What came back on the target used here:
+
+| Probe | Result |
+| --- | --- |
+| `bash`, `sh` | both present — compound commands can be written normally |
+| `busybox` | absent |
+| `/proc/loadavg`, `/proc/uptime` | present, but **denied** to this account |
+| `/proc/meminfo` | readable |
+
+A file existing is not a file being readable, so probe per file — and let
+`command -v`, not a guess, answer whether a shell is there.
+
+### Degrade instead of failing
+
+Given that table, a load-average recipe has to carry its own fallback: `uptime`
+prints the same three numbers through a different door.
+
+```bash
+gw run 'if [ -r /proc/loadavg ]; then cat /proc/loadavg; else uptime; fi'
+```
+
+### Remote paths do pass through your local shell — for SFTP only
+
+The gateway's promise is that a command never round-trips through your local
+shell: it travels as a JSON *string value*. That holds for `/run`. It does
+**not** hold for SFTP paths, which are positional argv — and on Windows,
+Git-Bash rewrites any argument that looks like an absolute POSIX path before
+Python ever sees it:
+
+```console
+$ gw sftp ls /srv/backups
+gw: HTTP 404 NOT_FOUND: remote path does not exist:
+    C:/programs/git/srv/backups
+```
+
+The remote side answered honestly; it was simply asked about a different path.
+Two ways out, both measured:
+
+```bash
+MSYS_NO_PATHCONV=1 gw sftp ls /srv/backups    # or:
+gw sftp ls //srv/backups                      # a doubled leading slash survives
+```
+
+`~` is not expanded remotely either: `gw sftp ls '~'` looks for a directory
+literally named `~`. Spell the path out.
+
+### A snapshot that explains itself
+
+Collect on the target, describe the collection *on the target*, ship one
+tarball, pull it back. Keep stdout for the single thing you need to capture and
+let everything else pass through as narration:
+
+```bash
+SNAP=$(gw run 'base="$HOME"; d="$base/snap-$(date +%Y%m%d-%H%M%S)"; mkdir -p "$d"
+if [ -r /proc/loadavg ]; then L=$(cat /proc/loadavg); else L=$(uptime | sed "s/.*average: *//"); fi
+{
+  echo "target : $(uname -srm)"
+  echo "user   : $(whoami)"
+  echo "when   : $(date)"
+  echo "load   : $L"
+  echo "---"
+  echo "uptime.txt  uptime(1); readable even where /proc/loadavg is not"
+  echo "disk.txt    df -h \$HOME"
+  echo "mem.txt     MemTotal/MemFree, or a DENIED marker"
+} > "$d/_README.txt"
+uptime > "$d/uptime.txt" 2>&1
+df -h "$HOME" > "$d/disk.txt" 2>&1
+if [ -r /proc/meminfo ]; then grep -E "^(MemTotal|MemFree)" /proc/meminfo > "$d/mem.txt"; else echo "DENIED on this target" > "$d/mem.txt"; fi
+t="$base/snapshot.tgz"; tar -czf "$t" -C "$(dirname "$d")" "$(basename "$d")" >/dev/null 2>&1 && echo "$t"')
+
+MSYS_NO_PATHCONV=1 gw sftp get "$SNAP" ./
+```
+
+```
+snap-20260101-120000/_README.txt
+snap-20260101-120000/disk.txt
+snap-20260101-120000/mem.txt
+snap-20260101-120000/uptime.txt
+```
+
+`_README.txt` is the whole trick: one block turns a pile of text files into
+something you can hand to a colleague. Writing no progress chatter to stdout is
+what makes `SNAP=…` come back as a clean single value.
+
+Note `$HOME` rather than `/tmp`: on the target measured here `/tmp` existed and
+was **read-only**, which turns a working recipe into four "No such file or
+directory" lines. Where `/tmp` is not writable, `${TMPDIR:-/tmp}` is the
+portable choice.
+
+### Periodic sampling as a job you can walk away from
+
+`gw async` prints a bare job id, so it captures straight into a variable:
+
+```bash
+HANDLE=$(gw async 'for i in 1 2 3 4 5; do
+  if [ -r /proc/loadavg ]; then L=$(cat /proc/loadavg); else L=$(uptime | sed "s/.*average: *//"); fi
+  echo "$(date +%H:%M:%S) load=$L"
+  if [ "$i" -lt 5 ]; then sleep 10; fi
+done')
+gw job "$HANDLE"                  # status, and the real remote PID
+gw output "$HANDLE" --follow
+```
+
+**Make the loop's last statement a real command.** The obvious way to write that
+sleep — `[ "$i" -lt 5 ] && sleep 10` as the final line — is wrong, and wrong in
+the worst way: every sample is collected, the output is flawless, and the job
+still reports `exit_code: 1`. On the last iteration the test is false, `&&`
+short-circuits, and that failed test *becomes* the loop's exit status. `if … fi`
+returns `0` when the condition is false, which is what was meant. Measured side
+by side: `if … fi` → `done`, `exit_code 0`; `&&` → `failed`, `exit_code 1`.
+
+Read the outcome from the JSON as well, because `gw output` prints the text and
+exits `0` whether the job succeeded or failed. `job.exit_code` in
+`gw output --json "$HANDLE"` is the only place that truth lives.
+
+### A long task, and where its output lives
+
+Job handles are in memory. Restart the gateway and the remote process keeps
+running while becoming unaddressable — so have the far side record its own
+whereabouts:
+
+```bash
+gw run 'echo "pid=$$ started $(date)" >> "$HOME/longtask.log"
+        nohup sh -c "sleep 3600; echo done \$(date) >> \"\$HOME/longtask.log\"" &
+        echo "spawned pid=$!"'
+```
+
+The log, the PID and the progress are then readable with another call, with no
+dependence on any in-memory state:
+
+```bash
+gw run 'cat "$HOME/longtask.log"'
+```
+
+### The exit code is the truth, not stdout
+
+```bash
+gw run 'ls /definitely/not/here'    # → 2, message on stderr
+gw run 'echo fine'                  # → 0
+```
+
+Two ways scripts lose it. The first is the pipe: `gw run '…' | head; echo $?`
+reports `head`'s status, so a failure reads as success.
+
+```bash
+OUT=$(gw run 'ls /definitely/not/here' 2>&1); RC=$?
+```
+
+The second is `--json`, which exits `0` unconditionally (see above). Pick one
+idiom and stay in it: no `--json` and trust the exit code, or `--json` and read
+`exit_code` out of the payload.
+
+### Rehearse before you deploy
+
+A destructive step deserves a dry run with the same shape and none of the
+consequences:
+
+```bash
+gw run 'set -e
+        d="${TMPDIR:-/tmp}/rehearsal.$$"; mkdir -p "$d/bin"; cd "$d"
+        echo "target dir : $d"
+        for f in a b c; do echo x > "bin/$f"; done
+        echo "wrote      : $(ls bin | wc -l) files"
+        rm -rf "$d"
+        echo REHEARSAL_OK'
+```
+
+### What a refusal looks like
+
+```console
+$ gw run 'reboot'
+gw: HTTP 403 FORBIDDEN: matches danger pattern: \breboot\b
+$ echo $?
+1
+```
+
+Exit `1`, message on stderr, nothing sent over SSH. Now the honest part: that
+check is a **text filter**, and a text filter cannot tell intent from a string.
+`echo reboot` is refused just as hard, and `echo "reb""oot"` passes through and
+prints `reboot`. Read a refusal as "you have almost certainly made a mistake",
+never as "this cannot happen" — the security section says the same thing from
+the other direction.
 
 ## Endpoints
 
