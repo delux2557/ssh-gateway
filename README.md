@@ -129,7 +129,7 @@ side.
 | `SSHGW_TARGET` | — | `[user@]host[:port]`; or set `SSHGW_REMOTE_HOST/USER/PORT` |
 | `SSHGW_REMOTE_KEY` / `SSHGW_REMOTE_PASS` | — | exactly one is required |
 | `SSHGW_KNOWN_HOSTS` | unset | if set, unknown host keys are **rejected** |
-| `SSHGW_LISTEN_HOST` / `SSHGW_LISTEN_PORT` | `127.0.0.1` / `8023` | HTTP bound to loopback by default |
+| `SSHGW_LISTEN_HOST` / `SSHGW_LISTEN_PORT` | `127.0.0.1` / `8023` | HTTP bound to loopback by default; any other address requires `SSHGW_TOKEN` |
 | `SSHGW_TOKEN` | unset | require `Authorization: Bearer <token>` |
 | `SSHGW_TLS_CERT` / `SSHGW_TLS_KEY` | unset | serve HTTPS |
 | `SSHGW_POLICY_MODE` | `blacklist` | `off` \| `blacklist` \| `whitelist` |
@@ -156,8 +156,11 @@ line to mean "this program only". And a whitelisted program with an escape hatch
 (`python3 -`, `vim`, `find -exec`) is still a shell. If you need real isolation,
 it has to come from the remote account, not from this file.
 
-- **Bind loopback by default.** Reach the gateway through an SSH tunnel or a
-  reverse proxy with auth, not by setting `SSHGW_LISTEN_HOST=0.0.0.0`.
+- **Bind loopback by default — and that one is enforced.** The gateway refuses
+  to start on an address that is not loopback unless `SSHGW_TOKEN` is set,
+  because unauthenticated `POST /run` is a remote shell for whoever can open
+  the port. Reach it through an SSH tunnel or an authenticating reverse proxy
+  rather than widening the bind.
 - **Set a token.** `/` and `/run*` are unauthenticated without one. With a token
   set, `/health`, `/openapi.json` and `/routes` stay public so a supervisor can
   probe, and `/health` stops naming the target.

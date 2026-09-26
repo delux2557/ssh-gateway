@@ -8,6 +8,7 @@ connecting somewhere unexpected.
 
 from __future__ import annotations
 
+import ipaddress
 import os
 
 
@@ -38,6 +39,25 @@ def _bool(name: str, default: bool) -> bool:
 def _package_version() -> str:
     from ._version import __version__
     return __version__
+
+
+def _is_loopback(host: str) -> bool:
+    """True only for addresses no other machine can reach.
+
+    Deliberately strict, and not a substring test: ``0.0.0.0``, ``::`` and the
+    empty string all mean "every interface", while ``127.1.2.3`` and ``::1``
+    mean the opposite. A hostname other than ``localhost`` is *not* assumed to
+    be local, because DNS decides where it points.
+    """
+    name = (host or "").strip().lower()
+    if name.startswith("[") and name.endswith("]"):     # bracketed IPv6 literal
+        name = name[1:-1]
+    if name == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(name).is_loopback
+    except ValueError:
+        return False
 
 
 def _parse_target(spec: str) -> tuple[str, int, str]:
@@ -129,6 +149,18 @@ class Config:
     # ------------------------------------------------------------------
     def validate(self) -> None:
         """Fail fast on unusable configuration."""
+        # Checked before anything else because it is the one setting whose
+        # mistake is not a broken run but an open door: reachable from off-box
+        # and unauthenticated, POST /run is a remote shell for anyone who can
+        # open the port. Loopback needs no token (the local user already has a
+        # shell); every other bind does, no exceptions.
+        if not _is_loopback(self.listen_host) and not self.api_token:
+            where = self.listen_host or "(every interface)"
+            raise ConfigError(
+                f"refusing to listen on {where} without SSHGW_TOKEN: /run would "
+                "be an unauthenticated remote shell for anyone who can reach "
+                "the port. Set SSHGW_TOKEN, or listen on 127.0.0.1 and reach "
+                "the gateway through a tunnel")
         if not self.remote_host or not self.remote_user:
             raise ConfigError(
                 "no SSH target: set SSHGW_TARGET=user@host[:port] "

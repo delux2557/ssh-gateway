@@ -77,6 +77,49 @@ def test_bad_policy_mode_is_rejected(env):
         Config().validate()
 
 
+# ----------------------------------------------------------------------
+# The one setting whose mistake is an open door rather than a broken run.
+@pytest.mark.parametrize("listen", [
+    "0.0.0.0",          # every IPv4 interface
+    "::",               # every IPv6 interface
+    "192.0.2.9",        # a routable-looking address
+    "",                 # what HTTPServer reads as "every interface"
+    "gateway.lan",      # a name, so DNS decides where it points
+])
+def test_exposed_listener_without_a_token_is_refused(env, listen):
+    """Off-box and unauthenticated means POST /run is a shell for anyone.
+
+    The empty string belongs in this list: ``SSHGW_LISTEN_HOST=`` reads as
+    unset but binds to every interface, which is the opposite of loopback.
+    """
+    env(TARGET="someone@host", REMOTE_PASS="x", LISTEN_HOST=listen)
+    with pytest.raises(ConfigError, match="SSHGW_TOKEN"):
+        Config().validate()
+
+
+@pytest.mark.parametrize("listen", [
+    "127.0.0.1", "127.5.5.5", "localhost", "LOCALHOST", "::1", "[::1]",
+])
+def test_loopback_listener_needs_no_token(env, listen):
+    """Anyone who can reach loopback already has a shell on this machine."""
+    env(TARGET="someone@host", REMOTE_PASS="x", LISTEN_HOST=listen)
+    Config().validate()
+
+
+@pytest.mark.parametrize("listen", ["0.0.0.0", "192.0.2.9", "gateway.lan"])
+def test_exposed_listener_is_allowed_once_a_token_is_set(env, listen):
+    env(TARGET="someone@host", REMOTE_PASS="x", LISTEN_HOST=listen, TOKEN="s3cret")
+    Config().validate()
+
+
+def test_a_hostname_that_mimics_loopback_is_still_exposed(env):
+    """``127.example.test`` is a name, not the loopback range: a substring test
+    would wave it through, ipaddress does not."""
+    env(TARGET="someone@host", REMOTE_PASS="x", LISTEN_HOST="127.example.test")
+    with pytest.raises(ConfigError, match="SSHGW_TOKEN"):
+        Config().validate()
+
+
 def test_unprefixed_variables_are_ignored(monkeypatch):
     """A stray $TOKEN in the environment must not become an auth secret."""
     monkeypatch.setenv("TOKEN", "accidental")
