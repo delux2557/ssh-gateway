@@ -1,0 +1,57 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ssh-gateway"
+dynamic = ["version"]
+description = "Turn one SSH-only device into an HTTP API: exec, streaming, detached jobs, SFTP sync, audit."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+keywords = ["ssh", "gateway", "paramiko", "sftp", "agent", "remote-execution", "http-api"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: POSIX",
+  "Programming Language :: Python :: 3",
+  "Topic :: System :: Networking",
+  "Topic :: Software Development :: Testing",
+]
+dependencies = ["paramiko>=3.0"]
+
+[project.urls]
+Homepage = "https://github.com/delux2557/ssh-gateway"
+Issues = "https://github.com/delux2557/ssh-gateway/issues"
+
+[project.scripts]
+ssh-gateway = "ssh_gateway.cli:main"
+gw = "ssh_gateway.client:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "ruff>=0.4"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ssh_gateway"]
+
+[tool.hatch.version]
+path = "src/ssh_gateway/_version.py"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Integration tests need Docker; run them with `pytest -m integration`.
+addopts = "-m 'not integration'"
+markers = [
+  "integration: needs the docker sshd fixture (deselected unless SSHGW_TEST_DOCKER=1)",
+  "gw_config: override Config fields for the integration gateway fixture",
+  "gw_expect_unreachable: do not wait for the SSH transport in the fixture",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E501", "UP006", "UP007", "UP035", "UP045", "B008"]

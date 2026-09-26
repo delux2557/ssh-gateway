@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# runtime state: audit log (verbatim commands), job output, TLS material
+.sshgw-state/
+*.key
+*.pem
+*.crt
+
+.venv/
+venv/
+.env
+
+# A contributor's own private strings (real host, paths, old tokens) that
+# tests/test_hygiene.py refuses to let into the tree. Local by design: the
+# check ships, the data it protects does not.
+.hygiene-denied
