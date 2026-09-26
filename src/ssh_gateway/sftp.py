@@ -205,7 +205,12 @@ class SFTPService:
         """Best-effort mtime restore; a server that refuses it breaks nothing
         except the skip-on-next-run optimisation, which is reported."""
         try:
-            sf.utime(remote, (None, int(mtime)))
+            # Both slots must be filled: paramiko sets the ACMODTIME attribute
+            # flag only when atime *and* mtime are present, so a None in either
+            # one turns the whole SETSTAT into a silent no-op that raises
+            # nothing -- no warning, no preserved mtime, repeat syncs that
+            # re-copy everything.
+            sf.utime(remote, (int(mtime), int(mtime)))
         except Exception as e:
             msg = f"remote mtime not preserved ({type(e).__name__}): repeat syncs will re-copy"
             if msg not in stats["warnings"]:

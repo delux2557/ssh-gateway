@@ -130,9 +130,19 @@ class FakeSFTP:
         self.utime_calls += 1
         if not self.utime_supported:
             raise OSError("Operation not supported")
+        if isinstance(attrs, (tuple, list)):
+            atime, mtime = attrs[0], attrs[1]
+        else:
+            atime = mtime = attrs
+        # Mirror paramiko's rule instead of being kinder than it: the ACMODTIME
+        # flag is only set when atime *and* mtime are present, so a None in
+        # either slot sends no timestamps at all and the call succeeds anyway.
+        # A fake that applied ``(None, mtime)`` hid exactly that bug.
+        if atime is None or mtime is None:
+            return
         path = self._norm(path)
         entry = self._require(path)
-        entry[1] = int(attrs[1] if isinstance(attrs, (tuple, list)) else attrs)
+        entry[1] = int(mtime)
 
 
 # ======================================================================

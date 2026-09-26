@@ -233,6 +233,13 @@ def test_push_then_pull_is_incremental_both_ways(gw, tmp_path, home):
     (src / "sub").mkdir(parents=True)
     (src / "a.txt").write_text("content-a")
     (src / "sub" / "b.txt").write_text("content-b")
+    # A fixed, clearly-past mtime rather than "whatever write_text left":
+    # against a current timestamp a no-op utime still passes whenever the
+    # write and the upload land in the same second, which on a localhost
+    # runner they usually do.
+    stamp = 1_700_000_000
+    for path in (src / "a.txt", src / "sub" / "b.txt"):
+        os.utime(path, (stamp, stamp))
     remote = f"{home}/it-sync-{uuid.uuid4().hex[:6]}"
 
     def sync(**kw):
@@ -240,6 +247,12 @@ def test_push_then_pull_is_incremental_both_ways(gw, tmp_path, home):
 
     try:
         assert sync(direction="push", source=str(src), target=remote)["copied"] == 2
+        # The mtime has to actually land on the far side, not merely be
+        # *compared*: a no-op utime still looks incremental whenever the round
+        # trip is shorter than the comparison tolerance, which is exactly what
+        # a localhost CI runner is.
+        far = run(gw, f"stat -c %Y {remote}/a.txt").strip()
+        assert int(far) == stamp, "upload did not preserve the source mtime"
         again = sync(direction="push", source=str(src), target=remote)
         assert (again["copied"], again["skipped"]) == (0, 2), again["warnings"]
 
