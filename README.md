@@ -82,11 +82,10 @@ Every verb accepts `--json`, on either side of the verb (`gw --json status` and
 as indented JSON instead of formatted text — that is the shape a non-human
 caller should parse.
 
-One consequence is worth knowing before you build on it: **`--json` always exits
-`0`.** The outcome you care about is a field inside that payload, not `gw`'s own
-status. Without `--json`, `gw run` exits with the remote command's exit code
-(`gw run 'exit 7'` → `7`); with it, the same call exits `0` and `exit_code: 7`
-sits in the JSON.
+`--json` changes the output, not the outcome: `gw run` exits with the remote
+command's exit code in both modes (`gw run 'exit 7'` → `7`, and so does
+`gw run --json 'exit 7'`). Format and status are independent, so a script can
+parse the payload and still trust `$?`.
 
 ## Recipes
 
@@ -256,9 +255,10 @@ reports `head`'s status, so a failure reads as success.
 OUT=$(gw run 'ls /definitely/not/here' 2>&1); RC=$?
 ```
 
-The second is `--json`, which exits `0` unconditionally (see above). Pick one
-idiom and stay in it: no `--json` and trust the exit code, or `--json` and read
-`exit_code` out of the payload.
+The second is asking a question that does not carry the answer. `gw run` reports
+the remote command's status, but `gw output <id>` reports whether the *log* could
+be read — a failed job prints its output and still exits `0`, and its real status
+is `job.exit_code` in the JSON.
 
 ### Rehearse before you deploy
 

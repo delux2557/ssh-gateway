@@ -66,10 +66,27 @@ def _unwrap(status: int, parsed: Any) -> Any:
     return parsed["data"]
 
 
+def _exit_status(data: Any) -> int:
+    """The remote command's exit status, when the payload carries one.
+
+    Split out of the rendering because ``--json`` used to drop it on the floor.
+    A machine-readable format is a reason to parse the payload, not a reason for
+    the process to claim success: a caller piping ``gw run --json`` into a build
+    step needs the status exactly as much as one that does not, and every
+    comparable CLI (``gh``, ``docker``, ``aws``) keeps the two independent.
+
+    A payload without ``exit_code`` -- ``status``, ``jobs``, ``routes`` -- has
+    nothing to report, and neither has one whose status is 0.
+    """
+    if isinstance(data, dict) and data.get("exit_code"):
+        return int(data["exit_code"])
+    return 0
+
+
 def _show(data: Any, as_json: bool) -> int:
     if as_json:
         print(json.dumps(data, ensure_ascii=False, indent=2, default=str))
-        return 0
+        return _exit_status(data)
     if isinstance(data, dict):
         for key in ("stdout", "stderr"):
             if key in data and data[key]:
@@ -77,11 +94,9 @@ def _show(data: Any, as_json: bool) -> int:
         if "stdout" not in data and "stderr" not in data:
             for k, v in data.items():
                 print(f"{k}: {v}")
-        if "exit_code" in data and data["exit_code"]:
-            return int(data["exit_code"])
     elif data is not None:
         print(data)
-    return 0
+    return _exit_status(data)
 
 
 def _stream(url: str, path: str, body: Optional[dict], token: str) -> int:
