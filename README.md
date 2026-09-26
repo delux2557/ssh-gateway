@@ -111,13 +111,35 @@ What came back on the target used here:
 
 | Probe | Result |
 | --- | --- |
-| `bash`, `sh` | both present — compound commands can be written normally |
-| `busybox` | absent |
-| `/proc/loadavg`, `/proc/uptime` | present, but **denied** to this account |
-| `/proc/meminfo` | readable |
+| `bash`, `sh`, `tar`, `gzip`, `unzip`, `sha256sum`, `timeout`, `sed`, `awk`, `seq`, `nproc`, `ps`, `find`, `python`, `curl` | present |
+| `busybox`, `zip`, `rsync`, `git`, `nc`, `vim` | absent |
+| `/proc/meminfo`, `/proc/cpuinfo`, `/sys/class/thermal/thermal_zone0/temp` | readable |
+| `/proc/loadavg`, `/proc/uptime`, `/proc/stat`, `/proc/diskstats`, `/proc/pressure/cpu` | present, but **denied** to this account |
 
 A file existing is not a file being readable, so probe per file — and let
-`command -v`, not a guess, answer whether a shell is there.
+`command -v`, not a guess, answer whether a shell is there. Note that `rsync` is
+absent there, which is the practical reason `/sftp/sync` exists in this gateway:
+on a target without it, the gateway is the incremental path rather than a
+convenience wrapper around one.
+
+The denied list is worth reading carefully, because it is not random: load,
+per-CPU time, disk I/O and pressure are exactly the signals a kernel exposes
+about *other* work on the machine, and a restricted account is not allowed to
+see them. So is the process list:
+
+```console
+$ gw run 'ps -e | wc -l'
+20
+$ gw run 'ps -eo stat | tail -n +2 | sort | uniq -c'   # a D/Z count on this box
+      4 R
+     18 S
+```
+
+`ps` exits 0 and answers, it just answers about the account's own processes — so
+a D-state or zombie count comes back as a clean zero and reads as "healthy"
+rather than as "I could not see". Prefer counts you can cross-check, and treat a
+suspiciously round number from a restricted target as a visibility limit before
+you treat it as a measurement.
 
 ### Degrade instead of failing
 
@@ -323,6 +345,32 @@ learns the real PID of the process it started, and the shell is configurable
 and functions perfectly well while `bash` may not exist at all. A command never
 gets a `Tty: operation not supported` surprise: no pty is requested.
 
+That wrapper is for **detached** commands only. A plain `/run` sends the command
+bare, and the target's sshd executes it with the **login shell** — so the two
+paths do not necessarily run the same shell:
+
+| Path | Shell that runs your command |
+| --- | --- |
+| `POST /run`, `gw run` | the login shell, whatever `sshd` gives the account |
+| `POST /run/async`, `gw async` | `SSHGW_REMOTE_SHELL`, default `sh` |
+
+On most hosts both are a POSIX shell and the difference never surfaces. Where
+they diverge — a login shell of `bash` while `sh` is `dash`, which is the
+ordinary arrangement on Debian and on any target whose `sh` is a stripped-down
+one — a command accepted by `gw run` can fail under `gw async`:
+
+```console
+$ gw run   'if [[ 1 == 1 ]]; then echo ok; fi'    # login shell: bash
+ok
+$ gw async 'if [[ 1 == 1 ]]; then echo ok; fi'    # wrapper: sh -> dash
+sh: [[: not found
+```
+
+The integration fixture cannot show this, because it has one shell and the two
+paths therefore agree by construction. Write portable `sh` in anything you might
+later promote to a job, or set `SSHGW_REMOTE_SHELL=bash` when you know the
+target has it.
+
 ## Sync semantics
 
 `push` is local → target, `pull` is target → local; `source` and `target` follow
@@ -335,6 +383,25 @@ worse than telling you once.
 `delete: true` mirrors removals, per directory rather than only at the top level.
 `dry_run: true` reports `copied`/`deleted` counts and writes nothing on either
 side.
+
+Only `sync` skips anything. `put` copies unconditionally, whatever the size and
+mtime say — re-pushing an unchanged file moves it again.
+
+What a transfer costs, measured one file at a time over a wireless LAN against an
+embedded-class target:
+
+| Operation | Time |
+| --- | --- |
+| `gw run 'true'` — one round trip | ~130 ms |
+| `gw sftp put`, 4 KiB | ~2.2 s, and unstable: repeats of the same file took 2.2 s, 2.7 s and 16.2 s |
+| `gw sftp put`, 8 MiB / 32 MiB | 4.1 s / 8.1 s — about 4–5 MiB/s marginal |
+| `gw sftp sync`, 20 small files | 3.9 s in total, ~195 ms per file |
+
+The fixed part is charged per **call**, not per byte and not per file: each `put`
+opens its own SFTP session, and a target that spawns that subsystem slowly pays
+for it every time. So batching is not a micro-optimisation — the same 20 files
+took 3.9 s through one `sync` and roughly 45 s through twenty `put`s. Reach for
+`sync` on a tree, or tar it and pull once, as the snapshot recipe does.
 
 ## Configuration
 
